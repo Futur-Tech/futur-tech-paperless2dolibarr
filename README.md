@@ -64,3 +64,11 @@ cd futur-tech-paperless2dolibarr
 ## Setup Zabbix
 
 A Zabbix template is available to monitor errors and files that do not match the expected patterns.
+
+## Linking file
+In Paperless,  you can link a file by:
+1. Adding the **Dolibarr reference** at the begining of your document title followed by a space (e.g., *PR2405-1234 Signed proposal*)
+2. Selecting the correct **Document Type** (e.g., *Devis Client*)
+3. Selecting the correct **Storage Path** `Paperless2Dolibarr`
+
+> Note: you can link the same document to several references separated with a `+` (e.g., *PR2405-1234+PR2405-1235 Signed proposals*)
