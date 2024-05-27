@@ -1,0 +1,8 @@
+# Run the script every 5 minutes to synchronize files between 9am and midnight
+*/5 9-23 * * * root /usr/local/bin/futur-tech-paperless2dolibarr/sync >/dev/null 2>&1
+
+# Run the script every 30 minutes to synchronize files between midnight and 9am
+*/30 0-8 * * * root /usr/local/bin/futur-tech-paperless2dolibarr/sync >/dev/null 2>&1
+
+# Run the script at midnight with --process-all option for full processing
+5 0 * * * root /usr/local/bin/futur-tech-paperless2dolibarr/sync process-all >/dev/null 2>&1

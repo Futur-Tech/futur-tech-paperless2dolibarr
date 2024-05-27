@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+
+source /usr/local/bin/futur-tech-paperless2dolibarr/ft_util_inc_var
+source "/usr/local/etc/futur-tech-paperless2dolibarr.conf"
+
+LOG_FILE="/var/log/futur-tech-paperless2dolibarr_sync.log"
+
+# Ensure the directories are set in the configuration
+if [ -z "$ppl_originals_dir" ] || [ -z "$ppl_archive_dir" ] || [ -z "$local_rsync_dir" ]; then
+    $S_LOG -s crit "One or more required directories are not set in the configuration."
+    exit 1
+fi
+
+# Ensure local sync directory exists
+if [ ! -d "${local_rsync_dir}" ]; then
+    $S_LOG -s $? -d $S_NAME "Missing local_rsync_dir [${local_rsync_dir}]"
+    exit 2
+fi
+
+# Variables to track counts
+new_links=0
+updated_links=0
+correct_links=0
+dolibarr_dir_not_found=0
+removed_links=0
+
+# Define the destination directories for Paperless Document Types
+declare -A destination_dirs=(
+    ["$ppl_type_supplier_proposal"]="${dol_documents_dir}/supplier_proposal"
+    ["$ppl_type_supplier_order"]="${dol_documents_dir}/fournisseur/commande"
+    ["$ppl_type_supplier_invoice"]="${dol_documents_dir}/fournisseur/facture"
+    ["$ppl_type_supplier_delivery"]="${dol_documents_dir}/reception"
+    ["$ppl_type_client_proposal"]="${dol_documents_dir}/propale"
+    ["$ppl_type_client_order"]="${dol_documents_dir}/commande"
+    ["$ppl_type_client_invoice"]="${dol_documents_dir}/facture"
+    ["$ppl_type_client_delivery"]="${dol_documents_dir}/expedition"
+    ["$ppl_type_client_contract"]="${dol_documents_dir}/contract"
+    # ["$ppl_type_bank_statement"]="${dol_documents_dir}/bank" # Dolibarr folder not created automatically and bank number as subfolder
+    ["$ppl_type_bank_checkdeposit"]="${dol_documents_dir}/bank/checkdeposits"
+    ["$ppl_type_expensereport"]="${dol_documents_dir}/expensereport"
+    # ["$ppl_type_salary"]="${dol_documents_dir}/salaries" # Dolibarr folder not created automatically
+    # ["$ppl_type_vat"]="${dol_documents_dir}/tax/vat" # Dolibarr folder not created automatically
+    # ["$ppl_type_tax"]="${dol_documents_dir}/tax/vat" # Dolibarr folder not created automatically and 1 declaration should be assigned to several charge
+)
+
+# Function to create or update a link
+create_or_update_link() {
+    local file="$1"
+    local link="$2"
+
+    # Remove the local_rsync_dir and dol_documents_dir from paths
+    local file_rel="${file#$local_rsync_dir/}"
+    local link_rel="${link#$dol_documents_dir/}"
+
+    $S_LOG -s debug -d "File" "$file_rel"
+
+    if [[ -L "$link" ]]; then
+        local current_target=$(readlink -- "$link")
+        $S_LOG -s debug -d "Current target of the link" "$current_target"
+        if [[ "$current_target" == "$file" ]]; then
+            $S_LOG -s debug -d "Link already exists" "$link_rel"
+            ((correct_links++))
+        else
+            ln -sf "$file" "$link"
+            $S_LOG -s $? -d "Update link" "$link_rel"
+            ((updated_links++))
+        fi
+    elif [[ -f "$link" ]]; then
+        $S_LOG -s err -d "File already exists" "$link"
+    else
+        ln -s "$file" "$link"
+        $S_LOG -s $? -d "New link" "$link_rel"
+        ((new_links++))
+    fi
+}
+
+# Function to remove a link
+remove_link() {
+    local link="$1"
+
+    if [[ -L "$link" ]]; then
+        rm "$link"
+        $S_LOG -s $? -d "Remove link" "$link"
+        ((removed_links++))
+    fi
+}
+
+# Function to delete all links
+remove_all_links() {
+    for destination_dir in "${destination_dirs[@]}"; do
+        find "$destination_dir" -type l -name "${link_prefix}" | while read -r link; do
+            remove_link "$link"
+        done
+    done
+}
+
+# Function to process a file
+process_file() {
+    local file=$(realpath "$1") # realpath is used to sanitize the file path
+    local filename=$(basename "$file")
+    local parent_dir=$(basename "$(dirname "$file")")
+    local destination_dir="${destination_dirs[$parent_dir]}"
+    local filename_ref=$(basename "$filename" | cut -d ' ' -f 1)
+
+    # Split filename_ref by '+'
+    IFS='+' read -ra dol_refs <<<"$filename_ref"
+
+    if [[ -n "$destination_dir" ]]; then
+        for dol_ref in "${dol_refs[@]}"; do
+            local target_dir=$(find "$destination_dir" -type d -name "$dol_ref" -print -quit)
+            if [[ -z "$target_dir" ]]; then
+                $S_LOG -s warn "Dolibarr directory/ref [$dol_ref] not found for ${parent_dir}/${filename}"
+                ((dolibarr_dir_not_found++))
+            else
+                create_or_update_link "$file" "$target_dir/${link_prefix}${filename}"
+            fi
+        done
+    else
+        $S_LOG -s err "Unknown Paperless document type: [$parent_dir] for ${filename}"
+    fi
+}
+
+# Check for the remove-all option
+if [[ "$1" == "remove-all" ]]; then
+    read -p "This will remove all existing links in [${dol_documents_dir}] which start with [${link_prefix}]. Are you sure you want to proceed? [y/n]: " confirm
+    if [[ "$confirm" == "y" ]]; then
+        remove_all_links
+        exit 0
+    else
+        $S_LOG -s warn "Remove all links operation canceled."
+        exit 0
+    fi
+fi
+
+# Define rsync environment variables
+RSYNC_RSH="ssh -o PasswordAuthentication=no"
+rsync_options=("--itemize-changes" "--recursive" "--times" "--compress" "--delete" "--delete-excluded")
+
+# Exclude inbox tag
+rsync_options+=(
+    "--exclude=*\\[*,$ppl_inbox_tag,*\\].*"
+    "--exclude=*\\[$ppl_inbox_tag,*\\].*"
+    "--exclude=*\\[*,$ppl_inbox_tag\\].*"
+    "--exclude=*\\[$ppl_inbox_tag\\].*"
+)
+
+# Run rsync of archives directory
+rsync_output=$(rsync ${rsync_options[@]} "paperless@$ppl_server:$ppl_archive_dir/" "$local_rsync_dir/archive/")
+
+# Check if rsync connection failed
+if [[ $? -ne 0 ]]; then
+
+    $S_LOG -s err "Failed to establish rsync connection to $ppl_server."
+    $S_LOG -s debug "Please ensure that the public key of this server is added to the authorized keys of the Paperless user on $ppl_server."
+    $S_LOG -s debug "You can add the public key by running the following command on $ppl_server:"
+    $S_LOG -s debug
+    $S_LOG -s debug "mkdir -p /home/paperless/.ssh"
+    $S_LOG -s debug "echo \"$(cat ~/.ssh/id_rsa.pub)\" >> /home/paperless/.ssh/authorized_keys"
+    $S_LOG -s debug "chmod 700 /home/paperless/.ssh"
+    $S_LOG -s debug "chmod 600 /home/paperless/.ssh/authorized_keys"
+    $S_LOG -s debug "chown -R paperless:paperless /home/paperless/.ssh"
+    $S_LOG -s debug
+
+    exit 1
+fi
+
+# Create a temporary file to store the list of files to exclude from rsync originals
+exclude_file=$(mktemp)
+
+# Fetch the list of files in the local_rsync_dir/archives and write them to the exclude file
+find "${local_rsync_dir}/archive" -type f | sed "s|^${local_rsync_dir}/archive/||" | sed 's/[][*?\]/\\&/g' | sed 's/\.pdf$/\.*/' >"$exclude_file"
+
+# Rsync command to synchronize ppl_originals_dir with local_rsync_dir, excluding files that exist in ppl_archive_dir
+rsync_output+=$(rsync ${rsync_options[@]} --exclude-from="$exclude_file" "paperless@$ppl_server:$ppl_originals_dir/" "$local_rsync_dir/originals/")
+
+rm -f "$exclude_file" # Remove the temporary exclude file
+
+# Check if rsync had any changes
+if [[ -z "$rsync_output" ]] && [[ "$1" != "process-all" ]]; then
+    $S_LOG "No changes detected during rsync."
+    exit 0
+fi
+
+echo "$rsync_output" | $S_LOG -d "rsync" -i
+
+# Link new files to the correct folder
+
+if [[ "$1" == "process-all" ]]; then
+    # Process all files using background jobs
+    while IFS= read -r file; do
+        process_file "$file"
+    done < <(find "$local_rsync_dir" -type f)
+else
+    # Parse rsync output and process added files using background jobs
+    while IFS= read -r rel_file; do
+        process_file "$local_rsync_dir/$rel_file"
+    done < <(echo "$rsync_output" | awk '/^>f\+*/ {print substr($0, index($0, " ") + 1)}')
+fi
+
+# Remove file links when files are not present
+for destination_dir in "${destination_dirs[@]}"; do
+    while IFS= read -r link; do
+        target=$(readlink "$link")
+        if [[ ! -e "$target" ]]; then
+            remove_link "$link"
+        fi
+    done < <(find "$destination_dir" -type l -name "${link_prefix}")
+done
+
+# Output the count
+$S_LOG "New: $new_links"
+$S_LOG "Updated: $updated_links"
+$S_LOG "Not modified: $correct_links"
+$S_LOG "Not found: $dolibarr_dir_not_found"
+$S_LOG "Removed: $removed_links"

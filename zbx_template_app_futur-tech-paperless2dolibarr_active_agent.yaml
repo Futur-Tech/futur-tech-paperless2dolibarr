@@ -1,0 +1,98 @@
+zabbix_export:
+  version: '6.0'
+  date: '2024-05-27T15:33:50Z'
+  groups:
+    - uuid: 7f27dc73981940769811e7fae4a26772
+      name: Templates/Futur-Tech/Applications
+  templates:
+    - uuid: 991a740a90e0431cb3121f2be2846d08
+      template: 'Futur-Tech App Paperless2Dolibarr'
+      name: 'Futur-Tech App Paperless2Dolibarr'
+      description: 'https://github.com/Futur-Tech/futur-tech-paperless2dolibarr'
+      groups:
+        - name: Templates/Futur-Tech/Applications
+      items:
+        - uuid: 1e416fb650bb4440bbaa6e1065d2f988
+          name: 'Paperless2Dolibarr: Log'
+          type: ZABBIX_ACTIVE
+          key: 'logrt[/var/log/futur-tech-paperless2dolibarr_sync.log,,,,skip,,600]'
+          delay: 10m
+          trends: '0'
+          value_type: LOG
+          logtimefmt: 'yyyy-MM-dd hh:mm:ss'
+          tags:
+            - tag: Application
+              value: Dolibarr
+          triggers:
+            - uuid: 5b4b9b57523c40b2b428c2ada47b0b46
+              expression: 'find(/Futur-Tech App Paperless2Dolibarr/logrt[/var/log/futur-tech-paperless2dolibarr_sync.log,,,,skip,,600],#1,"regexp","^[\ \d\-\:]{19,} \|\| alert \|.+")=1'
+              recovery_mode: NONE
+              name: 'Alert detected in Paperless2Dolibarr log'
+              opdata: '{{ITEM.VALUE}.regsub("(.*)", \1)}'
+              priority: DISASTER
+              description: |
+                Need to be closed manually.
+                
+                In order to force a synchronisation you can run:
+                /usr/local/bin/futur-tech-paperless2dolibarr/sync process-all
+              type: MULTIPLE
+              manual_close: 'YES'
+            - uuid: dc1b683ab7a54b519b1c50047d1e3718
+              expression: 'find(/Futur-Tech App Paperless2Dolibarr/logrt[/var/log/futur-tech-paperless2dolibarr_sync.log,,,,skip,,600],#1,"regexp","^[\ \d\-\:]{19,} \|\| crit \|.+")=1'
+              recovery_mode: NONE
+              name: 'Critical Error detected in Paperless2Dolibarr log'
+              opdata: '{{ITEM.VALUE}.regsub("(.*)", \1)}'
+              priority: HIGH
+              description: |
+                Need to be closed manually.
+                
+                In order to force a synchronisation you can run:
+                /usr/local/bin/futur-tech-paperless2dolibarr/sync process-all
+              type: MULTIPLE
+              manual_close: 'YES'
+            - uuid: f780afd823a2479cbe34f116354596ca
+              expression: 'find(/Futur-Tech App Paperless2Dolibarr/logrt[/var/log/futur-tech-paperless2dolibarr_sync.log,,,,skip,,600],#1,"regexp","^[\ \d\-\:]{19,} \|\| err \|.+")=1'
+              recovery_mode: NONE
+              name: 'Error detected in Paperless2Dolibarr log'
+              opdata: '{{ITEM.VALUE}.regsub("(.*)", \1)}'
+              priority: AVERAGE
+              description: |
+                Need to be closed manually.
+                
+                In order to force a synchronisation you can run:
+                /usr/local/bin/futur-tech-paperless2dolibarr/sync process-all
+              type: MULTIPLE
+              manual_close: 'YES'
+            - uuid: 07b21d61091345efacd01cbe2fd7c20d
+              expression: 'find(/Futur-Tech App Paperless2Dolibarr/logrt[/var/log/futur-tech-paperless2dolibarr_sync.log,,,,skip,,600],#1,"regexp","^[\ \d\-\:]{19,} \|\| warn \|.+")=1'
+              recovery_mode: NONE
+              name: 'Warning detected in Paperless2Dolibarr log'
+              opdata: '{{ITEM.VALUE}.regsub("(.*)", \1)}'
+              status: DISABLED
+              priority: WARNING
+              description: |
+                Need to be closed manually.
+                
+                In order to force a synchronisation you can run:
+                /usr/local/bin/futur-tech-paperless2dolibarr/sync process-all
+              type: MULTIPLE
+              manual_close: 'YES'
+        - uuid: 7c052ec37038461099d35c3c8aa612f1
+          name: 'Paperless2Dolibarr: Number of file not matched'
+          type: ZABBIX_ACTIVE
+          key: 'system.run["grep ''|| Not found:'' /var/log/futur-tech-paperless2dolibarr_sync.log | tail -n 1 | awk ''{print $NF}''"]'
+          delay: 30m
+          tags:
+            - tag: Application
+              value: Dolibarr
+          triggers:
+            - uuid: a98de5aafec74c29b875f49d5a2fb496
+              expression: 'last(/Futur-Tech App Paperless2Dolibarr/system.run["grep ''|| Not found:'' /var/log/futur-tech-paperless2dolibarr_sync.log | tail -n 1 | awk ''{print $NF}''"])>0'
+              name: 'Paperless2Dolibarr could not match a file'
+              opdata: 'Not matched: {ITEM.LASTVALUE1} PDFs'
+              priority: AVERAGE
+              description: |
+                In order to force a synchronisation you can run:
+                /usr/local/bin/futur-tech-paperless2dolibarr/sync process-all
+      tags:
+        - tag: Futur-Tech
