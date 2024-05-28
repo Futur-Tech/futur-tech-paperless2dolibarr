@@ -96,7 +96,13 @@ remove_all_links() {
 
 # Function to process a file
 process_file() {
-    local file=$(realpath "$1") # realpath is used to sanitize the file path
+    # Check if the file exists
+    if [[ ! -f "$1" ]]; then
+        $S_LOG -s crit "File does not exist: [$1]"
+        return
+    fi
+
+    local file="$1"
     local filename=$(basename "$file")
     local parent_dir=$(basename "$(dirname "$file")")
     local destination_dir="${destination_dirs[$parent_dir]}"
@@ -118,6 +124,16 @@ process_file() {
     else
         $S_LOG -s err "Unknown Paperless document type: [$parent_dir] for ${filename}"
     fi
+}
+
+# Parse rsync output and process added files
+process_rsync_output() {
+    local rsync_dir="$1"
+    local rsync_output="$2"
+
+    while IFS= read -r rel_file; do
+        process_file "$rsync_dir/$rel_file"
+    done < <(echo "$rsync_output" | awk '/^>f\+*/ {print substr($0, index($0, " ") + 1)}')
 }
 
 # Check for the remove-all option
@@ -145,7 +161,7 @@ rsync_options+=(
 )
 
 # Run rsync of archives directory
-rsync_output=$(rsync ${rsync_options[@]} "paperless@$ppl_server:$ppl_archive_dir/" "$local_rsync_dir/archive/")
+rsync_archive=$(rsync ${rsync_options[@]} "paperless@$ppl_server:$ppl_archive_dir/" "$local_rsync_dir/archive/")
 
 # Check if rsync connection failed
 if [[ $? -ne 0 ]]; then
@@ -164,6 +180,8 @@ if [[ $? -ne 0 ]]; then
     exit 1
 fi
 
+echo "$rsync_archive" | $S_LOG -d "rsync" -d "archive" -i
+
 # Create a temporary file to store the list of files to exclude from rsync originals
 exclude_file=$(mktemp)
 
@@ -171,40 +189,37 @@ exclude_file=$(mktemp)
 find "${local_rsync_dir}/archive" -type f | sed "s|^${local_rsync_dir}/archive/||" | sed 's/[][*?\]/\\&/g' | sed 's/\.pdf$/\.*/' >"$exclude_file"
 
 # Rsync command to synchronize ppl_originals_dir with local_rsync_dir, excluding files that exist in ppl_archive_dir
-rsync_output+=$(rsync ${rsync_options[@]} --exclude-from="$exclude_file" "paperless@$ppl_server:$ppl_originals_dir/" "$local_rsync_dir/originals/")
+rsync_originals=$(rsync ${rsync_options[@]} --exclude-from="$exclude_file" "paperless@$ppl_server:$ppl_originals_dir/" "$local_rsync_dir/originals/")
+echo "$rsync_originals" | $S_LOG -d "rsync" -d "originals" -i
 
 rm -f "$exclude_file" # Remove the temporary exclude file
 
-# Check if rsync had any changes
-if [[ -z "$rsync_output" ]] && [[ "$1" != "process-all" ]]; then
-    $S_LOG "No changes detected during rsync."
-    exit 0
-fi
-
-echo "$rsync_output" | $S_LOG -d "rsync" -i
-
-# Link new files to the correct folder
-
 if [[ "$1" == "process-all" ]]; then
-    # Process all files using background jobs
+    # Process all files
+    $S_LOG "Processing all files"
     while IFS= read -r file; do
         process_file "$file"
     done < <(find "$local_rsync_dir" -type f)
+elif [[ -z "$rsync_archive" ]] && [[ -z "$rsync_originals" ]]; then
+    # Exit if rsync has no changes
+    $S_LOG "No changes detected during rsync."
+    exit 0
 else
-    # Parse rsync output and process added files using background jobs
-    while IFS= read -r rel_file; do
-        process_file "$local_rsync_dir/$rel_file"
-    done < <(echo "$rsync_output" | awk '/^>f\+*/ {print substr($0, index($0, " ") + 1)}')
+    # Only process added files
+    process_rsync_output "$local_rsync_dir/archive" "$rsync_archive"
+    process_rsync_output "$local_rsync_dir/originals" "$rsync_originals"
 fi
 
 # Remove file links when files are not present
+$S_LOG "Checking links"
 for destination_dir in "${destination_dirs[@]}"; do
     while IFS= read -r link; do
         target=$(readlink "$link")
+        $S_LOG -s debug -d "Checking link" "[$link]-->[$target]"
         if [[ ! -e "$target" ]]; then
             remove_link "$link"
         fi
-    done < <(find "$destination_dir" -type l -name "${link_prefix}")
+    done < <(find "$destination_dir" -type l -name "${link_prefix}*")
 done
 
 # Output the count
